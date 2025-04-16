@@ -1,0 +1,512 @@
+s---
+title: "How Linear Regression with Interaction Helps Optimize Cosmetic Formulations"
+author: "Juan David Marin"
+date: "2025-03-05"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r, echo=F}
+knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(warning = F)
+knitr::opts_chunk$set(comment = '')
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(eval = T)
+```
+
+```{r}
+library(tinytex)
+library(GGally)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(shiny)
+library(dplyr)
+library(rlang) 
+library(emmeans)
+library(interactions)
+library(ppcor)
+library(pwr)
+```
+
+
+Recently, I faced a challenge in the company I worked for: we needed to better understand the products we were manufacturing and formulating. Due to a lack of understanding, we encountered some formulation problems during manufacturing. One of them was that we were adding more raw materials than the formulation required. When I performed chemical analysis in the laboratory, I noticed a great opportunity to optimize both the process and the formulation based on chemical data.
+
+It turned out that some formulations had a higher sun protection factor (SPF) than labeled because certain raw materials used in them enhanced the SPF claim. The physicochemical variables I considered were:
+
+- Octinoxate and Zinc oxide: These are UV filters, the main raw materials responsible for the SPF value in the foundation formulation.
+
+- Spf_in_vitro: This is the sun protection value of the formulations, depending on the amount of UV filters.
+
+- Emulsifier (categorical: Natural, Synthetic), emulsifier_type (categorical: ionic, non-ionic), base_type (categorical: oil, water): These describe the formulation characteristics.
+
+- Viscosity (continuous numerical): The viscosity of the makeup base or formulation.
+
+- CSAT (categorical: dislike, like, so-so): Consumer satisfaction.
+
+- Formula_price (continuous numerical): The cost of the formulation.
+
+(The data was simulated, but it presents a good example of what I worked on.)
+
+## The questions of the investigation were:
+1.	*How is the relationship between UV filters and FPS in vitro:*
+*	How is the relationship of octinoxate and Zinc oxide against in vitro SPF?
+*	Is there any interaction between octinoxate and Zinc oxide that impacts the in vitro SPF?
+
+2.	*What is the impact of categorical variables with the in vitro SPF:*
+* How do the categorical variables (emulsifier, emulsifier_type, base_type) influence the in vitro SPF?
+* Is there an interaction between categorical variables and the UV filter octinoxate that affects the in vitro SPF?
+
+3.	*Which is the viscosity effect in the formulation of makeup foundations:*
+* How does viscosity affect the in vitro SPF and customer satisfaction?
+* Is there any interaction between viscosity and the rest of the variables that affect the in vitro SPF and customer satisfaction?
+
+4.	*Customer satisfaction:*
+* How is the interaction between variables (octinoxate, viscosity, emulsifier, emulsifier_type, base_type) with customer satisfaction?
+* Are there interactions among these variables that affect customer satisfaction?
+
+5.	*Cost formulation relationship:*
+* How are the formulation variables related (octinoxate, viscosity, emulsifier, emulsifier_type, base_type) with customer satisfaction?
+* Are there interactions among these variables that affect cost formulation?
+
+6.	*Formulation optimization:*
+* Is it possible to reduce the UV filter amounts (octinoxate, Zinc oxide) while maintaining the in vitro SPF labeled, if we optimize the other variables?
+* What is the optimal combination among variables that enhances the in vitro SPF and customer satisfaction while minimizing cost formulation?
+
+Those were the questions. Maybe there could be more, but these helped me to understand the makeup foundation formulation and to solve the formulation overruns.
+
+It is necessary to mention again that the data I am going to analyze were simulated.
+
+This is what the data looks like:
+
+```{r echo=T}
+foundation <- read.csv('SPF_formulaII.csv')
+head(foundation)
+```
+
+
+### *CORRELATION ANALYSIS*
+
+Let’s check the normality of the variables.
+
+```{r echo=T}
+sapply(foundation[c('octinoxate', 'zinc_oxide', 'spf_in_vitro')], shapiro.test)
+```
+As we see, the p-values of the variables for the normality test are lower than 0.05, which means they don’t follow a normal distribution. So, for that reason, I used the Spearman method to evaluate the correlation.
+
+```{r echo=T}
+cor.test(x = foundation$octinoxate, y = foundation$spf_in_vitro, method = 'spearman')
+cor.test(x = foundation$zinc_oxide, y = foundation$spf_in_vitro, method = 'spearman')
+```
+Both variables have a positive and significant correlation against in vitro SPF (p-value < 2.2e-16), however, Octinoxate shows a better and stronger correlation (rho = 0.71) than Zinc Oxide (rho = 0.57). It means Octinoxate has a stronger impact against in vitro SPF than Zinc Oxide.
+
+ Now, I made sure that the correlation between Octinoxate and in vitro SPF was not influenced by Zinc Oxide (Causality)
+ 
+```{r echo=T}
+pcor.test(x = foundation$octinoxate,
+          y = foundation$spf_in_vitro, 
+          z = foundation$zinc_oxide)
+```
+The correlation between octinoxate and in vitro SPF is not masked by zinc oxide, as it remains very strong and significant (rho = 0.88, p < 2.33e-96) even after controlling for zinc oxide. This means that octinoxate has a direct and independent impact on in vitro SPF.
+
+*Statistical power*
+
+```{r echo=T}
+pwr.r.test(n = dim(foundation)[1],r = 0.7147902, sig.level = 0.05)
+pwr.r.test(n = dim(foundation)[1],r = 0.5694974, sig.level = 0.05)
+```
+Both correlations have a statistical power of 1. It means that the sample size of 300 is more than enough to detect these relationships.
+
+As Octinoxate is the variable that has a stronger relationship against in vitro SPF, this variable will be used in the next analysis.
+
+Let's perform a linear regression to figure out the interactions.
+
+```{r echo=T}
+octinoxate_lm <- lm(spf_in_vitro ~ octinoxate, data = foundation)
+summary(octinoxate_lm)
+```
+```{r echo=T}
+ggplot(data = foundation, aes(x = octinoxate, y = spf_in_vitro)) +
+  geom_point()+
+  geom_smooth(method="lm", formula = 'y ~ x') +
+  ggtitle('Lineal model: Octinoxate Vs In vitro SPF')
+```
+
+
+The results of the model say that each time Octinoxate increases by 1%, the in vitro SPF increases by 0.475 units, and the relationship is pretty significant (p < 2e-16). Also, when Octinoxate has 0% concentration, the in vitro SPF in the formulas has an in vitro SPF of 9.11.
+
+*This relationship is highly significant, confirming that octinoxate is a key ingredient to achieve the desired level of sun protection in formulations.*
+
+# Interactions
+
+Let's review the possible interactions among continuous variables in order to figure out their relationships.
+
+The code below is the linear model for the in vitro SPF according to the interaction between Octinoxate concentration and Zinc Oxide concentration.
+
+
+```{r echo=T}
+cont_cont <- lm(spf_in_vitro ~ octinoxate*zinc_oxide, data = foundation)
+summary(cont_cont)
+```
+
+$In-vitro~FPS = \beta_0 + \beta _1 * Conc\_Octinoxate + \beta_2 * Conc\_Zinc\_Oxide + \beta_3 * (Octinoxate~*~Zinc\_Oxide)$
+
+- $\beta_0$: This is the intercept or the predicted result when Octinoxate = 0 and Zinc Oxide = 0.
+- $\beta_1~(octinoxate)$ This is the simple slope of Octinoxate for a one-unit change in Octinoxate.
+- $\beta_2~(Zinc\_Oxide)$  This is the simple slope of Zinc Oxide for a one-unit change in Zinc Oxide.
+- $\beta_3~(Octinoxate~*~Zinc\_Oxide)$ This is the interaction between Octinoxate and Zinc Oxide. It's the change in the slope of Octinoxate for each unit increase in Zinc Oxide.
+
+
+The interaction between Octinoxate and Zinc Oxide is significant, and the combination has a synergistic effect on the in vitro SPF (p < 2e-16). Octinoxate keeps the most important impact by itself in providing solar protection to a makeup foundation formulation, but Zinc Oxide doesn't have the same impact.
+
+Using Octinoxate and Zinc Oxide together enhances the in vitro SPF. Depending on the context, we can consider using less Zinc Oxide without affecting the SPF value because its effect is not as important as Octinoxate's effect. However, we have to be careful when using this approach because Zinc Oxide provides the UVA protection to a sun protection factor formulation
+
+
+**Simple slopes analysis of interactions (octinoxate:zinc_oxide) allows us to figure out how the SPF is affected when Octinoxate's impact changes with different concentrations of Zinc Oxide. This is useful because it might help us optimize the amount of both ingredients required to reach the desired SPF without adding more than the formulation needs. This leads to reducing overcosts by minimizing the use of Zinc Oxide where it is not critical, speeding up formulation times by avoiding unnecessary testing, enhancing the development of new products by predicting the SPF without multiple tests, and reducing formulation and manufacturing times.**
+
+```{r echo=T}
+interact_plot(cont_cont, pred = 'octinoxate', modx = 'zinc_oxide', plot.points = T, interval =  T ,colors = c("#ED3C0C", "#970D9E", "#50A714"))
+```
+
+The interaction graphic showcases Octinoxate's effects on the in vitro SPF depending on the Zinc Oxide level. The more Zinc Oxide concentration, the more Octinoxate's effects. This approach allows us to understand the UV filters' behavior in order to get the optimal concentrations to achieve the desired SPF value, saving time and money by avoiding unnecessary testing, making the formulation and manufacturing process faster, and ensuring that the products have the labeled SPF level.
+
+
+
+```{r echo=T}
+sim_slopes(cont_cont, pred = 'octinoxate', modx = 'zinc_oxide', cond.int =T)
+```
+
+As we noticed in the previous analysis above, Octinoxate has the main interaction with SPF, and it happens to be that Zinc Oxide increases this interaction if we raise its concentration in a formula. For instance, if we add 2.89% of Zinc Oxide into a formula, the in vitro SPF will increase by 0.33 units each time Octinoxate increases by 1% in the formula. This confirms the idea that we can optimize the SPF value by optimizing the amount of UV filters needed to reach the desired SPF, leading to optimization and saving formulation overrun.
+
+
+
+These analyses have shown how the Octinoxate and Zinc Oxide interaction affects in vitro SPF, and how this interaction may allow us to optimize formulation processes, costs, and time, in general, to be more efficient.
+However, there are more variables that I was interested in analyzing in order to understand how they affect the formulations in general, formulation costs, and customer satisfaction. That is why I performed other interactions between numerical and categorical variables. Let's see them.
+
+The first variable I wanted to check was the emulsifier type because they affect formulation stability and texture, which is very important when distributing the solar filters properly in order to optimize the in vitro SPF formulations.
+
+
+I chose the ionic group as the reference group.
+
+```{r echo=T}
+foundation$emulsifier_type <- factor(foundation$emulsifier_type)
+contrasts(foundation$emulsifier_type)
+```
+ionic = 0 and nonionic = 1, so ionic is the reference group
+
+
+```{r echo=T}
+cont_cat <- lm(spf_in_vitro~octinoxate*emulsifier_type, data = foundation)
+summary(cont_cat)
+```
+
+```{r echo=T}
+interact_plot(cont_cat, pred = octinoxate, modx = emulsifier_type, plot.points = T, interval = T)
+```
+
+The results of the model's analysis and graph indicate that the in vitro SPF is not affected by the emulsifier type (ionic, non-ionic) (p = 0.812) and does not interact significantly with Octinoxate either (p = 0.515). We might think that the emulsifier is not a raw material that affects the in vitro SPF directly, so we can proceed to figure out the rest of the variable interactions
+
+So now, I will to check the interaction between Octinoxate and emulsifier (Natural or Synthetic)
+
+```{r echo=T}
+foundation$emulsifier <- factor(foundation$emulsifier)
+contrasts(foundation$emulsifier)
+```
+
+
+```{r echo=T}
+cont_cat2 <- lm(spf_in_vitro~octinoxate*emulsifier, data = foundation)
+summary(cont_cat2)
+```
+
+```{r echo=T}
+interact_plot(cont_cat2, pred = octinoxate, modx = emulsifier, plot.points = T, interval = T)
+```
+
+
+$\beta_0 = 9.68118$ : This is the intercept, or the predicted in vitro SPF when octinoxate = 0 in the reference group emulsifier, where Natural = 0. When octinoxate = 0 and emulsifier = Natural, the predicted in vitro SPF is 9.68.
+
+$\beta_1~(octinoxate) = 0.16963$ 0.16963 is the simple slope of octinoxate for the reference group emulsifier, where Natural = 0. For each unit that octinoxate increases, the in vitro SPF increases by 0.17 (p < 0.001).
+
+$\beta_2~(emulsifierSintetic) = 0.84344$ e0.84344 is the simple effect of the emulsifier or the difference in the in vitro SPF between emulsifier Natural and emulsifier Synthetic when octinoxate is 0. The way R does things implies that Synthetic is included in the equation. Changing to a synthetic emulsifier increases the in vitro SPF by 0.84 (p = 0.0016)
+
+$\beta_3~(Octinoxate~*~emulsifier) = 0.14499$ = 0.14499 Interaction between octinoxate and emulsifier, is the difference in the simple slopes of octinoxate concentration for emulsifier Synthetic versus emulsifier Natural. The effect of octinoxate is greater when the emulsifier is synthetic. For each unit that octinoxate increases, the in vitro SPF increases by an additional 0.14 (p = 0.0066).
+
+Model goodness:
+R² (0.7352): The model explains 73.52% of the variability in the in vitro SPF.
+Model p-value (< 2.2e-16): The model is significant.
+
+```{r echo=T}
+sim_slopes(cont_cat2, pred = 'octinoxate', modx = 'emulsifier')
+```
+Simple Slopes:
+
+- When emulsifier = Natural: The slope of octinoxate is 0.17 (p < 0.001). For each unit that octinoxate increases, the in vitro SPF increases by 0.17.
+- When emulsifier = Synthetic: The slope of octinoxate is 0.31 (p < 0.001). For each unit that octinoxate increases, the in vitro SPF increases by 0.31.
+
+
+**These results showcase that the emulsifier (Natural vs. Synthetic) affects the in vitro SPF value. Synthetic emulsifiers increase the SPF value (coefficient = 0.84344, p = 0.0016) and also have a synergistic effect with Octinoxate (coefficient = 0.14499, p = 0.00659). This means that the effect of Octinoxate is higher in formulations with synthetic emulsifiers than with natural emulsifiers. These results allow us to be more efficient when choosing the emulsifier type or to reduce time by focusing on ingredient combinations to maximize the SPF.**
+
+
+Let's check weather the formula's base type, either oil or water, has any effect on in vitro SPF 
+
+```{r echo=TRUE}
+foundation$base_type <- factor(foundation$base_type)
+contrasts(foundation$base_type)
+cont_cat3 <- lm(spf_in_vitro~octinoxate*base_type, data = foundation)
+summary(cont_cat3)
+interact_plot(cont_cat3, pred = octinoxate, modx = base_type, plot.points = T, interval = T)
+```
+
+Based on the results, the type of base (Oil vs. Water) doesn't have a significant effect on the in vitro SPF (p = 0.921), it doesn't interact significantly with Octinoxate either (p = 0.680). It is not worth spending time on the interactions analysis since the SPF is not affected greatly by oil or water base formulations.
+
+
+# Interaction among categorical variables
+**Now, let's figure out how the interaction among categorical variables is.**
+
+- **FPS, EMULSIFIER (Natural, Synthetic), CSAT**
+
+As we have seen so far, Octinoxate has a positive and significant effect on in vitro SPF, but emulsifier type (ionic or non-ionic) doesn't. However, the natural or synthetic base type shows a positive and significant effect on SPF values. Also, Octinoxate has a higher impact when it is used with synthetic emulsifiers.
+
+Maybe the natural or synthetic base affects customer satisfaction, which can make a difference in the formula perceptions.
+
+
+```{r echo=T}
+foundation$CSAT <- factor(foundation$CSAT)
+foundation$CSAT <- relevel(foundation$CSAT, ref = 'dislike')
+contrasts(foundation$CSAT)
+```
+
+```{r echo=T}
+cat_cat <- lm(spf_in_vitro~emulsifier*CSAT, data = foundation)
+summary(cat_cat)
+```
+
+```{r echo =T}
+cat_plot(cat_cat, pred = "emulsifier", modx = "CSAT", geom="line")
+```
+
+
+Those results shows how the SPF values change depending on the referenced category (dislike) using the Natural emulsifier group (The Natural emulsifier and dislike groups are the model's reference) 
+
+
+$CSAT:like$ (p = 0.0920): This result means that there isn't a statistical difference between the customers who says like from those who says dislike when they tested the Natural emulsifier formulation. So, there is no difference between 'like' and 'dislike' judgment when testing natural emulsifier formula.
+
+
+$CSAT:so-so$ (p = 0.7328): There isn't a statistical difference for SPF between "so_so" and "dislike" when using Natural emulsifier either. So, there isn't a different perception between those customers who says "so_so" and "dislike" when using natural emulsifier 
+
+Using a synthetic emulsifier instead of a Natural one, the SPF value increases by 2.02.
+
+Although synthetic emulsifiers usually increase SPF, if customer satisfaction is "so_so", this increase is partially negated.
+
+Summarizing:
+
+Formulations with Natural Emulsifier:
+There is no significant difference in SPF between “dislike”, “like” and “so_so” (p > 0.05). SPF performance is consistent, but the formulation does not make a clear difference in customer perception.
+
+Formulations with Synthetic Emulsifier:There is no difference in SPF between “dislike” and “like” (p = 0.0920), but SPF decreases by 0.97 units in “so_so” (p = 0.0127). Synthetic formulas might have an inconsistent user experience, especially for those with a “so_so” perception.
+
+
+- **FPS, EMULSIFIER (Ionic, No-ionic), CSAT**
+
+```{r echo=T}
+foundation$emulsifier_type <- factor(foundation$emulsifier_type)
+foundation$emulsifier_type <- relevel(foundation$emulsifier_type, ref = 'ionic')
+
+cat_cat2 <- lm(spf_in_vitro~emulsifier_type*CSAT, data = foundation)
+summary(cat_cat2)
+cat_plot(cat_cat2, pred = "emulsifier_type", modx = "CSAT", geom="line")
+```
+Ionic Emulsifier:
+SPF increases by +1.14 for “like” (p = 0.032), the SPF decreases by -0.95 for “so_so” (p = 0.0007).
+SPF performance changes based on customer perception. When the product is liked (“like”), the SPF is better. When the perception is “so_so”, the SPF goes down.
+Customer perception influences product performance, indicating a possible relationship between user experience and SPF efficacy in these formulas.
+
+
+Non-Ionic Emulsifier:
+There are no significant differences in SPF, regardless of whether customers said “dislike”, “like” or “so_so” (p > 0.05 across all interactions)
+Formulas with non-ionic emulsifier are consistent in their SPF, regardless of customer perception. Unlike ionic emulsifier, here satisfaction does not affect product performance.
+This could reflect a lack of measurable effect of customer satisfaction on SPF, which could be positive if product consistency is sought, or negative if better perception is expected to translate into better performance.
+
+
+
+- **FPS, base type and CSAT**
+
+```{r echo=T}
+contrasts(foundation$base_type)
+contrasts(foundation$CSAT)
+cat_cat_fps_base_type_CSAT <- lm(spf_in_vitro~base_type*CSAT, data = foundation)
+summary(cat_cat_fps_base_type_CSAT)
+cat_plot(cat_cat_fps_base_type_CSAT, pred = "base_type", modx = "CSAT", geom="line")
+
+
+```
+
+"So, we can analyze the above results in a more or less technical way, as follows:
+
+Reference categories:
+Base: oil, CSAT: dislike
+
+$In-vitro~FPS = 11.0018 + base_typeWater * 0.2774 + CSATlike * 1.5453 - CSATso_so * 0.6567 - base_typeWater:CSATso_so * 0.2403$
+
+
+- CSATlike: When the base is 'oil' type and the customer satisfaction (CSAT) is 'like', the in vitro SPF is 1.55 higher than the reference group (base oil and CSAT dislike).
+
+- CSATso_so: When the base is 'oil' type and the customer satisfaction (CSAT) is 'so-so', the in vitro SPF goes down 0.6567 compared to the reference group.
+
+- base_typeWater: When the base is water type and the customer satisfaction is 'dislike', the SPF increases by 0.2774 units compared to the oil base type marked as 'dislike'.
+
+- There isn't any case for the base_typeWater:CSATlike interaction in the data.
+
+- The interaction base_typeWater:CSATso_so has a coefficient of -0.2403, which means that in base water formulations that are marked as 'so-so', the SPF decreases by 0.2403 units compared to those base oil formulations marked as 'dislike'.
+
+
+Those results can sometimes be overwhelming and hard to understand. However, we can come up with an easy interpretation. For instance, if we want to enhance customer satisfaction and optimize the formulation process, we should focus on oil-based formulations, mainly to achieve a 'like' perception from customers. According to the model coefficients, the 'like' group has 1.55 SPF units higher than the 'dislike' group. Water-based formulations don't show a clear impact for those formulas with a 'so-so' customer perception, as they don’t have a significant change. That's why we should prioritize oil-based formulations to improve their performance and effectiveness.
+
+
+# Viscosity approach
+
+Viscosity is a key characteristic in foundation makeup formulations because:
+
+- Regarding SPF, getting a proper viscosity ensures a uniform distribution of UV filters, enhancing the SPF level.
+
+- Oil-based formulations tend to have a higher viscosity than water-based formulations. Either oil or water affects the viscosity, impacting stability and perception on the skin.
+
+- It is very common for synthetic emulsifiers to increase viscosity more than natural ones.
+
+- **Viscosity, Emulsifier (Natural, Synthetic), CSAT**
+
+```{r echo=T}
+contrasts(foundation$emulsifier)
+contrasts(foundation$CSAT)
+
+cat_cat_visc <- lm(viscosidad~emulsifier*CSAT, data = foundation)
+summary(cat_cat_visc)
+
+cat_plot(cat_cat_visc, pred = "emulsifier", modx = "CSAT", geom="line")
+```
+
+The coefficients of the model and graph show that formulas with natural emulsifiers and a "dislike" perception have a higher SPF than those with synthetic emulsifiers and the same "dislike" perception. Customers marked both types of emulsifier formulations (natural or synthetic) as "dislike" when they had lower viscosity values. Less viscosity, worse perception.
+
+However, there is an interesting challenge with natural formulations that were marked as 'so-so' because their viscosity increases significantly, so they can be adjusted to enhance customer satisfaction.
+
+$Intercept$, 1518.74 cP:
+This value represents the average viscosity for formulations made with a natural emulsifier and marked as "dislike."
+
+$EmulsifierSynthetic$, -456.16 cP:
+When switching from a natural emulsifier to a synthetic one in formulas marked as "dislike," viscosity decreases by 456.16 cP.
+
+$CSATlike$, 2429.56 cP:
+Viscosity shows a notable change for natural emulsifier formulations between those marked as "dislike" and "like." It seems that customers perceive formulas with higher viscosity made with a natural emulsifier more favorably.
+
+$CSATso_so$, 177.35 cP:
+For natural emulsifier formulations, customers can't identify a viscosity difference between formulas marked as "so-so" and "dislike" because the viscosity change (177.35 cP) is not statistically significant.
+
+$EmulsifierSynthetic:CSATso_so$, 2389.42 cP:
+Customers perceive a significant viscosity change in synthetic emulsifier formulations. When viscosity is low, they perceive them as "dislike," but if viscosity is higher, they perceive them as "so-so."
+
+$EmulsifierSynthetic:CSATlike$, (NA):
+There is no available data for this in the dataset.
+
+
+```{r include=FALSE}
+library(emmeans)
+emmeans(cat_cat_visc,~emulsifier*CSAT)
+```
+
+- **Viscosity, Emulsifier type (Oil, Water), CSAT**
+
+```{r echo=T}
+cat_cat_visc_emulsifier_type <- lm(viscosidad ~ emulsifier_type*CSAT, data = foundation)
+summary(cat_cat_visc_emulsifier_type)
+cat_plot(cat_cat_visc_emulsifier_type, pred= 'emulsifier_type', modx = 'CSAT', geom = 'line')
+```
+
+Regarding emulsifier type (ionic, non-ionic), the non-ionic formulations have the highest viscosity values.
+
+Ionic emulsifier formulations:
+Customers prefer ionic emulsifier formulations with higher viscosity. Samples with higher viscosity are better rated ('like'), whereas samples with intermediate viscosity are perceived in a neutral way ('so-so').
+
+For non-ionic formulations, samples marked as 'like' have higher viscosity, but the interaction effect of emulsifier_type:CSATlike (-107.6 cP) is not significant (p = 0.84). This means that, even though formulations with higher viscosity are well rated, the increase in viscosity is the only factor that explains the customer experience.
+
+
+
+```{r echo=T}
+cat_cat_visc_base_type <- lm(viscosidad~base_type*CSAT, data = foundation)
+summary(cat_cat_visc_base_type)
+cat_plot(cat_cat_visc_base_type, pred ="base_type" , modx = "CSAT", geom="line")
+```
+
+Oil based formulations have the highest viscosity (2234 cP) and are generally preferred, because samples with higher viscosity are generally rated as 'like'.
+
+The 'so-so' perception does not seem to be related to viscosity, as this group shows a slight reduction of 294.51 cP compared to 'dislike', but the difference is not statistically significant (p = 0.0858).
+
+Water-based formulations have lower viscosity (-1535 cP) than oil based formulations. When customers perceive them as 'so-so', viscosity increases by 1246 cP, suggesting that very fluid formulations are less acceptable.
+
+# Costs
+
+Analyzing formulation costs is interesting, especially how prices are affected by SPF and viscosity.
+
+- **In vitro SPF, formula_price, Customer satisfaction**
+
+```{r echo=T}
+cat_cont_formula_price_CSAT <- lm(spf_in_vitro~formula_price*CSAT, data = foundation)
+summary(cat_cont_formula_price_CSAT)
+interact_plot(cat_cont_formula_price_CSAT, pred ="formula_price", modx = "CSAT", geom="line")
+```
+
+Regarding customer perception, the results suggest that formulas marked as 'like' aren't negatively influenced by formula price in terms of in vitro SPF. This behavior differs from formulas marked as 'dislike,' where their in vitro SPF decreases as the formula price increases. However, since the interactions aren't statistically significant, there isn't strong evidence that formula price has a real effect on how customers perceive SPF.
+
+- **Viscosity, formula_price, Customer satisfaction**
+```{r}
+contrasts(foundation$CSAT)
+```
+
+
+```{r echo=T}
+cat_cont_viscosidad_formula_price_CSAT <- lm(viscosidad~formula_price*CSAT, data = foundation)
+summary(cat_cont_viscosidad_formula_price_CSAT)
+interact_plot(cat_cont_viscosidad_formula_price_CSAT, pred ="formula_price", modx = "CSAT", geom="line")
+
+```
+The results show that more expensive formulations tend to have higher viscosity, but this relationship depends on customer perception:
+
+- Formulas rated as 'dislike' show a stronger relationship between formula price and viscosity: higher price correlates with higher viscosity.
+- Formulas rated as 'so-so' tend to have higher viscosity overall, but the relationship between price and viscosity is weaker compared to 'dislike' formulas.
+- Formulas rated as 'like' do not show a clear relationship between price and viscosity. Although there is a slight increase in viscosity as the - - formula price increases, this effect is not statistically significant.
+- This suggests that higher viscosity does not necessarily translate into better customer acceptance. In fact, the formulas perceived as 'so-so' tend to have the highest viscosity, which could indicate that excessive viscosity is not always favorable for customer satisfaction.
+
+
+
+# **Conclusion:**
+
+This is a basic approach, but you can go further and do more.
+
+This study has shown how we can use linear regression with interactions as a useful tool for those who need to understand or improve a formulation process or enhance formulations. Through the physicochemical analysis of variables, formulation characteristics, and customer perception, I identified key relationships that can improve foundation makeup formulations with SPF.
+
+The results showed that:
+
+* Octinoxate is the raw material that has the greatest in vitro sun protection factor impact. Its effect is enhanced when blended with Zinc Oxide. This interaction of UV filters allows us to adjust the desired or required SPF without negatively affecting product performance.
+
+* The emulsifier affects viscosity and customer perception but not SPF directly. However, synthetic emulsifiers improve Octinoxate performance.
+
+* Viscosity is a key factor in customer perception. Formulations with higher viscosity tend to be better rated by customers, although excessive viscosity could generate a worse perception rather than a positive one.
+
+* Formula price doesn't seem to significantly affect customer perception in terms of SPF, although a relationship between price and viscosity is observed.
+
+These findings could be applied in any industry to improve manufacturing or formulation processes, reducing unnecessary costs and enhancing product quality while avoiding multiple laboratory tests. The combination of chemistry, statistics, and data science helps companies make strategic decisions based on data, improving efficiency in general.
+
+The main purpose of this study is to show a brief example of how we can apply a solution. This may give you an idea of how to tackle a challenge similar to this approach.
+
+THANK YOU FOR READING. I HOPE IT HAS BEEN HELPFUL FOR YOU.
+
+
+
+
+
+
+
+
