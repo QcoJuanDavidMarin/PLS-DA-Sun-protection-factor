@@ -1,0 +1,563 @@
+---
+title: "PLS to FPS and PLSDA emulsifier type"
+author: "Juan David Marin"
+format: PDF
+editor: visual
+---
+
+```{r, echo=F}
+knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(warning = F)
+knitr::opts_chunk$set(comment = '')
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(eval = T)
+```
+
+```{r}
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(reticulate)
+library(mdatools)
+
+```
+
+```{r}
+#file.choose()
+spf_data <- read.csv("C:\\Users\\juand\\Desktop\\proyectos\\FPS_SIMULATOR\\found.csv")
+
+spf_data <- spf_data %>% 
+  dplyr::mutate_if(is.character, as.factor) 
+
+str(spf_data[,c(1:12)])
+str(spf_data)
+```
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+set.seed(123)
+wl <- seq(290,400,1)
+idx <- sample(x = nrow(spf_data), size = as.integer(nrow(spf_data)*0.8))
+
+# Training set
+Xcfps <- spf_data[idx,13:123]
+ycfps <- spf_data[idx, c(1), drop =F]
+attr(Xcfps, 'xaxis.values') <- wl
+attr(Xcfps, 'xaxis.ntame') <- 'Wavelength, nm'
+
+# Testing set
+Xtfps <- spf_data[-idx,13:123]
+ytfps <- spf_data[-idx, c(1), drop =F]
+attr(Xtfps, 'xaxis.values') <- wl
+attr(Xtfps, 'xaxis.name') <- 'Wavelength, nm'
+
+par(mfrow = c(1, 2))
+mdaplot(data = Xcfps, type = 'l', cgroup = ycfps[[1]], ylab = 'FPS Value', xlab = 'Wavelength')
+mdaplot(data = Xcfps, type = 'l', cgroup =spf_data$emulsifier[idx], ylab = 'emulsifier type', xlab = 'Wavelength', 
+        main = 'PLS-DA classification')
+par(mfrow = c(1, 1))
+
+```
+
+# Model
+
+```{r}
+mfps <- pls(x = Xcfps, y = ycfps, cv = 5, ncomp = 5, x.test = Xtfps, y.test = ytfps, info = 'Pls model FPS')
+summary(mfps)
+```
+
+## Modificacion de spectros
+
+```{r}
+
+# prep.savgol <- no sirvió
+spf_data[,13:123] %>% 
+  prep.savgol(width = 15, porder = 2, dorder = 2) %>%
+  mdaplot(type = 'l', main = "width = 15, porder = 1, pqn")
+ 
+Xcfps_savgol <- spf_data[,13:123] %>% 
+  prep.savgol(width = 15, porder = 2, dorder = 2)
+
+
+spf_data_savgol <- cbind(spf_data[,1:12], Xcfps_savgol)
+
+
+# Training set
+Xcfps2 <- spf_data_savgol[idx,13:123]
+ycfps2 <- spf_data_savgol[idx, c(1), drop =F]
+attr(Xcfps2, 'xaxis.values') <- wl
+attr(Xcfps2, 'xaxis.ntame') <- 'Wavelength, nm'
+
+# Testing set
+Xtfps2 <- spf_data_savgol[-idx,13:123]
+ytfps2 <- spf_data_savgol[-idx, c(1), drop =F]
+attr(Xtfps2, 'xaxis.values') <- wl
+attr(Xtfps2, 'xaxis.name') <- 'Wavelength, nm'
+
+par(mfrow = c(1, 2))
+mdaplot(data = Xcfps2, type = 'l', cgroup = ycfps2[[1]], ylab = 'FPS Value', xlab = 'Wavelength')
+mdaplot(data = Xcfps2, type = 'l', cgroup =spf_data_savgol$emulsifier[idx], ylab = 'emulsifier type', xlab = 'Wavelength')
+par(mfrow = c(1, 1))
+
+
+mfps_savgol <- pls(x = Xcfps2, y = ycfps2, ncomp = 5, x.test = Xtfps2, y.test = ytfps2, info = 'Pls model FPS', scale = T, center = T)
+summary(mfps_savgol)
+
+```
+
+PLS Model for FPS – Summary
+
+This PLS model was built using UV spectral data to predict the sun protection factor (FPS). The model uses 5 components and includes 5-fold cross-validation to assess its performance more reliably.
+
+The model explains nearly all the variation in both the predictor (X) and response (FPS) data. R² values are above 0.99 for calibration, cross-validation, and test sets, which shows strong consistency. RMSE values remain low across all sets, and the RPD values are above 16, indicating excellent predictive ability.
+
+# Validation
+
+```{r}
+plot(mfps, ncomp = 3)
+
+# rmse
+mfps$res$cal$rmse[,]
+mfps$res$cv$rmse[,]
+mfps$res$test$rmse[,]
+plotRMSE(mfps, ncomp = 3)
+```
+
+The RMSE values tell us how far the predicted FPS values are from the true values. Lower RMSE means better prediction accuracy.
+
+In calibration, RMSE decreases from 1.69 to 0.47 as more components are added.
+
+In cross-validation, RMSE drops from 1.72 to 0.48, confirming the model generalizes well.
+
+In the test set, RMSE starts at 1.68 and stabilizes around 0.51 after 5 components.
+
+This consistent drop in RMSE across all sets shows that the model improves steadily with each added component and maintains good performance on unseen data.
+
+# Variance Explained in X and Y
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+#| 
+
+mfps$res$cal$xdecomp$expvar
+mfps$res$test$xdecomp$expvar
+
+
+mfps$res$cal$ydecomp$expvar
+mfps$res$test$ydecomp$expvar
+
+par(mfrow = c(1, 2))
+plotXVariance(mfps, show.labels = T, type = 'h')
+plotYVariance(mfps, show.labels = T, type = 'h')
+par(mfrow = c(1, 1))
+```
+
+X (Spectral data): In both calibration and test, the first component explains about 89% of the spectral variance. The second adds around 10%, and the rest contribute very little. This means the spectral structure is mostly captured with just 2 components.
+
+Y (FPS values): In calibration, component 1 alone explains over 95% of the variance in FPS. Additional components only improve the explanation slightly. In the test set, the pattern is similar: almost all variance is explained by the first component.
+
+## Prediction plot
+
+```{r}
+par(mfrow = c(1, 5))
+for(i in 1:5){
+    plotPredictions(mfps, ncomp = i)
+}
+par(mfrow = c(1, 1))
+mfps$res$cal$r2[,]
+mfps$res$test$r2[,]
+mfps$res$cv$r2[,]
+
+```
+
+These R² values show how well the model predicts FPS using different numbers of components. In calibration, cross-validation, and test, the R² increases from around 0.95 (1 component) to about 0.996 (5 components). The biggest improvement happens between components 2 and 3, after which the gain becomes smaller. This shows that 3 to 5 components are enough for highly accurate FPS prediction.
+
+# Regcoeff
+
+```{r}
+plotRegcoeffs(mfps, show.ci = T, ncomp = 4)
+```
+
+plotRegcoeffs(mfps, show.ci = TRUE, ncomp = 4) shows which wavelengths in the spectrum are most important to predict FPS. Peaks (high or low) mean that wavelength has a strong effect. Flat areas have little or no influence. The shaded area shows confidence; narrow bands = more reliable. This helps to understand which parts of the UV spectrum are used by the model to predict FPS.
+
+# X and Y Residuals
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+par(mfrow = c(1, 2))
+plotXResiduals(mfps, show.labels = T, ncomp = 4,show.legend = T)
+plotYResiduals(mfps, show.labels = T, ncomp = 4,show.legend = T)
+par(mfrow = c(1, 1))
+
+spf_data[rownames(Xcfps),][categorize(mfps, mfps$res$cal, ncomp = 4) == 'outlier',]
+
+Xcfps[categorize(mfps, mfps$res$cal, ncomp = 4) == 'outlier',]
+```
+
+X Residuals Plot (plotXResiduals) This plot shows how well the model explains the spectral data. Most samples have low residuals, meaning the model explains their spectra well. Samples 195 and 241 are labeled as outliers, with high X-residuals. Why are 195 and 241 outliers? These two samples have the lowest FPS values. Very low concentrations of Octinoxate and Zinc Oxide Because their spectra are very different from the others (weaker UV absorbance), the model cannot explain them well using the same components. These outliers may represent edge cases in the dataset. It's normal that the model fits less well when active ingredients are very low, since the spectral signal is weak.
+
+Y Residuals Plot (plotYResiduals) This plot shows the difference between the real FPS and the predicted FPS for each sample. Most samples have small residuals, meaning the model predicts FPS very well.
+
+CONCLUSIONES
+
+Impact on Formulation Efficiency
+
+Using this model, we need a simple UV scan and the model prediction can give you a fast, accurate estimate of FPS.
+
+This improves speed during formulation development, reduces lab testing costs, and allows faster decision-making when screening new sunscreen formulations. It can also help during quality control to check that the SPF of production batches is within expected levels before running full tests. #RMSD
+
+A final RMSE around 0.48–0.51 means the predicted FPS values are, on average, less than ±0.5 units away from the real FPS. This is very accurate and allows confident decision-making without the need for full lab testing. The model is reliable for both R&D and production batch control.
+
+Let me know if you want to visualize these RMSE trends or move on to the PLS-DA model next.
+
+# Variance Explained – FPS Model
+
+```{r}
+plotVariance(mfps,  show.labels = T, type = 'h')
+```
+
+
+The model captures both the spectral data and the target variable (FPS) very efficiently. This means the relationship between spectrum and FPS is strong and mostly linear. As a result, you can make reliable FPS predictions using minimal components, saving time and simplifying the model without losing accuracy. 
+
+# Prediction Performance
+
+The model predicts FPS very well across all sets. The prediction plot confirms that observed and predicted values are very close, with minimal error. This gives confidence in using the model to estimate FPS directly from spectral data, reducing the need for in vitro SPF tests.
+
+```{r}
+mfps$res$cal$y.ref
+mfps$res$cal$ydecomp$scores
+mfps$res$cal$ydecomp
+```
+
+######################## 
+
+PLS-DA
+
+```{r}
+
+set.seed(123)
+wl <- seq(290,400,1)
+idx <- sample(x = nrow(spf_data), size = as.integer(nrow(spf_data)*0.8))
+
+# Training set
+XcPLS <- spf_data[idx,13:123] 
+
+
+ycPLS <- as.factor(spf_data$emulsifier[idx])
+
+
+attr(XcPLS, 'xaxis.values') <- wl
+attr(XcPLS, 'xaxis.ntame') <- 'Wavelength, nm'
+
+# Testing set
+XtPLS <- spf_data[-idx,13:123] 
+
+ytPLS <- as.factor(spf_data$emulsifier[-idx])
+# ytPLS <- spf_data[-idx, c(7), drop =F] %>%  
+#   as.matrix() %>% 
+#   as.factor()
+
+attr(XtPLS, 'xaxis.values') <- wl
+attr(XtPLS, 'xaxis.name') <- 'Wavelength, nm'
+
+mdaplot(data = XcPLS, type = 'l', cgroup = ycPLS, ylab = 'Abs', xlab = 'Wavelength')
+
+
+plsda(spf_data[,13:123],ncomp = 8, spf_data[['emulsifier']], scale = TRUE, cv = list("ven", k = 10))
+```
+
+# Model PLS-DA
+
+```{r}
+mplsda <- plsda(XcPLS, ycPLS, ncomp =  7, scale = TRUE, cv = list("ven", k = 10),
+                      info = "Modelo PLS-DA para clasificación binaria UV 290-400nm")
+summary(mplsda)
+```
+
+Using PLS-DA to Classify Emulsifiers from UV Spectra
+
+In this part of the project, we wanted to know if it’s possible to identify the type of emulsifier used in a sunscreen formulation — Natural or Synthetic — using only its UV spectrum.
+
+We built a PLS-DA model using spectral data between 290–400 nm, and we trained it on 80% of the samples. The model used 7 components and was validated using 10-fold cross-validation to make sure it works well on new data.
+
+The results were very encouraging.
+
+The model achieved over 90% accuracy in both training and cross-validation. It was able to correctly identify most of the Natural and Synthetic samples. Specifically:
+
+For Natural emulsifiers, the model had 95.6% sensitivity — meaning it detected almost all Natural samples.
+
+For Synthetic, it had 95.6% specificity — meaning it rarely confused a Synthetic sample as Natural.
+
+This tells us that the UV spectrum contains enough chemical or physical information to detect differences between emulsifier types — maybe due to scattering, base behavior, or how actives are dispersed.
+
+But more importantly, this model has real practical value:
+
+In formulation, it gives us a quick way to confirm that the correct emulsifier was used — no need to manually check the recipe or wait for lab tests.
+
+In quality control, it can help detect possible errors early, just by scanning the product.
+
+And in cost and time savings, it avoids extra lab work and speeds up decisions in both R&D and production.
+
+In short, the model doesn’t just classify — it helps ensure the right ingredients are used, faster and with more confidence.
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+#| #mplsda$ncomp.selected
+par(mfrow = c(1, 3))
+# Sensibilidad: Capacidad de identificar correctamente las muestras de cada clase
+plotSensitivity(mplsda, main = "Sensibilidad vs. Componentes",nc = 1, show.labels = TRUE)
+#legend("bottomright", legend=levels(ycPLS), fill=mdatools::mdaplot.getColors(length(levels(ycPLS))))
+
+
+# Especificidad: Capacidad de rechazar correctamente las muestras que NO son de una clase
+plotSpecificity(mplsda, main = "Especificidad vs. Componentes", show.labels = TRUE)
+#legend("bottomright", legend=levels(ycPLS), fill=mdatools::mdaplot.getColors(length(levels(ycPLS))))
+
+
+# Tasa de Error (Misclassification Rate)
+plotMisclassified(mplsda, main = "Tasa de Error vs. Componentes", show.labels = TRUE)
+#legend("topright", legend=levels(ycPLS), fill=mdatools::mdaplot.getColors(length(levels(ycPLS))))
+
+par(mfrow = c(1, 1))
+```
+
+```{r}
+row.names(mplsda$res$cal$sensitivity)[1]
+mplsda$res$cal$sensitivity[1,]
+row.names(mplsda$res$cal$sensitivity)[2]
+mplsda$res$cal$sensitivity[2,]
+row.names(mplsda$res$cal$sensitivity)[3]
+mplsda$res$cal$sensitivity[3,]
+print('------------')
+
+mplsda$res$cal$sensitivity
+mplsda$res$cal$misclassified
+```
+
+```{r}
+mplsda$res$cal$sensitivity
+mplsda$res$cv$sensitivity
+
+mplsda$res$cal$sensitivity
+mplsda$res$cv$sensitivity
+
+mplsda$res$cal$misclassified
+mplsda$res$cv$misclassified
+```
+
+
+How well does the model classify emulsifiers?
+
+We wanted to know how many emulsifier samples the model could classify correctly at each number of components. We focused on two things: sensitivity (how many real samples were detected) and misclassification rate (how many were wrong).
+As the number of components increases from 1 to 4, the model becomes more stable:
+In cross-validation, the best balance is reached at 4 or 5 components.
+At this point, the model identifies almost all Natural samples (97–98% sensitivity) and keeps a good balance for Synthetic (around 86%).
+The total misclassification rate drops to around 7.5%, which is very low.
+This means the model is reliable in telling what emulsifier type was used, even before checking the formulation manually.
+
+
+# Visualizar Resultados de Clasificación (con ncomp_optimo)
+
+```{r}
+plotPredictions(mplsda, ncomp = 4, show.labels = F)
+# plot(x = mplsda$res$cal$xdecomp$scores[,1], y = mplsda$res$cal$xdecomp$scores[,2])
+# points(x = mplsda$xloadings[,1]/100, y = mplsda$xloadings[,2]/100, col = "red", pch = 19)
+
+```
+
+# Obtener la Matriz de Confusión
+
+Esto resume numéricamente el rendimiento de la clasificación.
+
+```{r}
+# Matriz de confusión para los resultados de Validación Cruzada (CV)
+getConfusionMatrix(mplsda$res$cv)
+
+# Matriz de confusión para los resultados de Calibración
+getConfusionMatrix(mplsda$res$cal)
+```
+After training the PLS-DA model, we checked how many samples were classified correctly and how many were confused. The confusion matrix gives us that picture.
+In both calibration and cross-validation, the model shows a very clear pattern:
+It correctly classified 130 out of 136 Natural samples.
+It correctly classified 88 to 90 out of 104 Synthetic samples.
+Only a small number of samples were confused between classes.
+So, the model is more accurate for Natural emulsifiers, but still performs very well for Synthetic ones.
+
+
+# Analizar la Importancia de las Variables (Longitudes de Onda)
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+par(mfrow = c(2, 2))
+# Regression Coefficients 
+plotRegcoeffs(mplsda, ncomp = 4, ny = 1)
+plotRegcoeffs(mplsda, ncomp = 4, ny = 2)
+
+# VIP Scores (Variables Importance in Projection)
+# Variables with VIP > 1 (or sometimes > 0.8) are considered important
+
+plotVIPScores(mplsda, ncomp = 4, ny = 1, 
+              main = paste("VIP Scores (", 7, " LVs)"))
+abline(h = 1, lty = 2, col = "grey")
+plotVIPScores(mplsda, ncomp = 4, ny = 2, 
+              main = paste("VIP Scores (", 7, " LVs)"))
+abline(h = 1, lty = 2, col = "grey") # 
+par(mfrow = c(1, 1))
+```
+What wavelengths are important to classify emulsifiers?
+
+We used two tools to understand which parts of the UV spectrum help the model separate Natural from Synthetic emulsifiers:
+
+Regression Coefficient Plot (plotRegcoeffs)
+This plot shows which wavelengths contribute the most to the classification.
+
+If the value is high or low, that wavelength has a strong influence.
+
+If it is close to zero, it means that wavelength is not useful for separating the classes.
+
+VIP Scores (plotVIPScores)
+This plot tells us the importance of each wavelength in the model.
+
+Wavelengths with VIP > 1 are the most important.
+
+These are the zones where Natural and Synthetic samples show the biggest spectral differences.
+
+
+# Predictions
+
+```{r}
+predictions_test <- predict(object = mplsda, XtPLS, ytPLS)
+
+# Ver las clases predichas (para el número óptimo de componentes)
+predictions_test$c.pred[,4,2]
+
+# Ver resumen de rendimiento en el test set
+summary(predictions_test)
+
+
+# Matriz de confusión para el test set
+getConfusionMatrix(predictions_test)
+
+
+# Plot de predicciones para el test set
+plotPredictions(mplsda, main = "Predicciones (Test Set)")
+```
+
+What really happened in the test predictions
+
+We tested the PLS-DA model on new samples to classify them as Natural or Synthetic based on their UV spectra. The overall accuracy was 88%, which seems strong at first.
+
+But when we look closer:
+
+The model was very good at predicting Natural (30 out of 31 correct).
+
+But it struggled with Synthetic, correctly predicting only 18 out of 29.
+
+That means more than one-third of the Synthetic samples were misclassified as Natural.
+
+
+
+#################
+
+Conclusion:
+
+This PLS-DA model shows that UV spectral data can be used to classify emulsifier types in sunscreen formulations. While the model performs very well for identifying Natural emulsifiers, its performance is lower for Synthetic. Even so, the results are promising.
+
+Although it's not perfect for final classification decisions, the model is a useful tool for fast screening and early checks during formulation and production. It allows:
+
+Quick detection of possible formulation errors,
+
+Confirmation of ingredient type without lab testing,
+
+Faster and cheaper quality control,
+
+And better data tracking during development.
+
+With further improvement — such as better class balance, fewer components, or selected wavelengths — this model can become a reliable and cost-effective method to support formulation optimization and reduce lab workload.
+
+In short, the model is a solid first step toward building a faster, more automated, and resource-efficient process for formulation control.
+
+Moreover, we can go farther by using analysis automation tools in order to gain more efficiency in the process. Let's take a look at the next steps.
+
+
+
+```{r}
+
+
+scores <- mplsda$res$cal$xdecomp$scores
+groups <- as.factor(spf_data[idx,7])
+
+
+ggplot(data = as.data.frame(scores), aes(x =  scores[,1], y = scores[,2], colour = groups)) +
+  geom_point() +
+  scale_fill_manual(values = c('#BF382A', '#0C4B8E')) +
+  labs(title = "PLS-DA Loadings and Scores Plot", x = "Component 1", y = "Component 2") +
+  stat_ellipse(data = as.data.frame(scores), aes(x = scores[,1], y = scores[,2], fill = groups, colour = groups),
+               geom = "polygon",
+               alpha = 0.1,
+               level = 0.95, 
+               type = "norm", 
+               linetype = 2) +
+  theme_minimal() 
+
+```
+
+
+
+```{r eval=F}
+## Trying a biplot
+# library(ggplot2)
+# library(ggrepel)  # Para evitar superposición de etiquetas
+# 
+# # 1. Preparar los datos de loadings (asumiendo que son las variables originales)
+# loadings_df <- as.data.frame(loadings[, 1:2])
+# loadings_df$variables <- rownames(loadings_df)  # Asumiendo que los nombres están en los rownames
+# 
+# # 2. Escalar los loadings para mejor visualización
+# scale_factor <- 0.8 * max(abs(scores[,1:2])) / max(abs(loadings[,1:2]))
+# loadings_df[,1:2] <- loadings_df[,1:2] * scale_factor
+# 
+# # 3. Crear el gráfico base con scores
+# p <- ggplot() +
+#   geom_point(data = as.data.frame(scores), 
+#              aes(x = scores[,1], y = scores[,2], color = groups, fill = groups),
+#              alpha = 0.7) +
+#   scale_fill_manual(values = c('#BF382A', '#0C4B8E')) +
+#   scale_color_manual(values = c('#BF382A', '#0C4B8E')) +
+#   labs(title = "PLS-DA Loadings and Scores Plot", 
+#        x = "Component 1", 
+#        y = "Component 2")
+# 
+# # 4. Agregar elipses de confianza al 95%
+# p <- p + stat_ellipse(data = as.data.frame(scores), 
+#                      aes(x = scores[,1], y = scores[,2], color = groups),
+#                      level = 0.95, 
+#                      type = "norm", 
+#                      linetype = 2)
+# 
+# # 5. Agregar vectores de loadings
+# p <- p + 
+#   geom_segment(data = loadings_df, 
+#                aes(x = 0, y = 0, xend = loadings_df[,1], yend = loadings_df[,2]),
+#                arrow = arrow(length = unit(0.2, "cm")), 
+#                color = "darkblue") +
+#   geom_text_repel(data = loadings_df, 
+#                  aes(x = loadings_df[,1], y = loadings_df[,2], label = variables),
+#                  color = "darkblue", 
+#                  size = 3)
+# 
+# # Mostrar el gráfico
+# print(p)
+```
+
+
+
+
+
+
