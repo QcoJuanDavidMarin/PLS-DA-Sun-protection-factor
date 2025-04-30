@@ -1,0 +1,583 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+```{r, echo=F}
+knitr::opts_chunk$set(echo = F)
+knitr::opts_chunk$set(warning = F)
+knitr::opts_chunk$set(comment = '')
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(eval = T)
+```
+
+```{r}
+library(tinytex)
+library(GGally)
+library(tidyr)
+library(tidyverse)
+library(ggplot2)
+library(shiny)
+library(dplyr)
+library(rlang) 
+library(emmeans)
+library(interactions)
+library(ppcor)
+library(pwr)
+library(neuralnet)
+library(mdatools)
+library(reticulate)
+
+```
+
+
+# Creating Data set
+
+```{python}
+import numpy as np
+import pandas as pd
+import random
+import statistics
+
+
+np.random.seed(123)
+random.seed(123)
+# Configuración inicial
+n_samples = 300  # Número de muestras
+
+# Generar las variables base
+octinoxate = np.random.uniform(1, 7.5, n_samples)  # Valores entre 1 y 7.5
+zinc_oxide = np.random.uniform(1, 10, n_samples)  # Valores entre 1 y 25
+
+# Generar las variables de eficacia
+eficacia_octinoxate_hplc = np.random.uniform(85, 100, n_samples)  # HPLC para Octinoxate
+eficacia_zno_aa = np.random.uniform(80, 100, n_samples)  # AA para ZnO
+
+# Calcular la interacción normalizada
+interaccion_octinoxate_zno = (octinoxate * zinc_oxide) / 10  # Normalizada
+
+# Calcular spf_in_vitro con pesos ajustados
+spf_in_vitro = (
+    0.1 * octinoxate +  # Mayor peso para octinoxate (correlación > 0.9)
+    0.7 * interaccion_octinoxate_zno +  # Contribución directa de zinc_oxide
+    0.05 * eficacia_octinoxate_hplc +  # Contribución de la eficacia de octinoxate (correlación 0.4-0.7)
+    0.05 * eficacia_zno_aa  # Contribución de la eficacia de ZnO (correlación 0.4-0.7)
+)
+
+# Ajustar spf_in_vitro para que esté en el rango deseado (5 a 50)
+spf_in_vitro = np.clip(spf_in_vitro, 5, 50)
+
+# Variables categóricas
+#emulsifier = np.random.choice(['Natural', 'Sintetic'], n_samples)
+emulsifier_type = np.random.choice(['ionic', 'non-ionic'], n_samples)
+############################
+## Intentando hacer una relacion con emulsifier type
+emulsifier = []
+for i in range(n_samples):
+    if spf_in_vitro[i] > np.mean(spf_in_vitro):
+        emulsifier.append('Sintetic')
+    if spf_in_vitro[i] <= np.mean(spf_in_vitro):
+        emulsifier.append('Natural')
+############################
+
+# base_type 
+base_type = np.random.choice(['Oil', 'Water'], n_samples)
+
+
+# Generar viscosidad basada en las variables categóricas
+viscosidad = []
+for i in range(n_samples):
+    if base_type[i] == 'Oil':
+        if emulsifier_type[i] == 'non-ionic':
+            viscosidad.append(random.uniform(1000, 5000))
+        else:
+            viscosidad.append(random.uniform(500, 3000))
+    else:  # Water
+        if emulsifier_type[i] == 'non-ionic':
+            viscosidad.append(random.uniform(200, 2000))
+        else:
+            viscosidad.append(random.uniform(100, 1000))
+
+##################################
+consumer_satisfaction = []
+for i in range(n_samples):
+    if emulsifier[i] == 'Sintetic':
+        if viscosidad[i] >= (max(viscosidad)/4)*2 and viscosidad[i] <= (max(viscosidad)/4)*4:
+            if spf_in_vitro[i] > (max(spf_in_vitro)/4)*3:
+                consumer_satisfaction.append('like')
+            else:
+                consumer_satisfaction.append('so_so')
+        else:
+            consumer_satisfaction.append('dislike')
+    elif emulsifier[i] == 'Natural':
+        if viscosidad[i] >= (max(viscosidad)/4)*1 and viscosidad[i] < (max(viscosidad)/4)*2:
+            if spf_in_vitro[i] <= (max(spf_in_vitro)/4)*3 and spf_in_vitro[i] >= (max(spf_in_vitro)/4)*1:
+                consumer_satisfaction.append('so_so')
+            else:
+                consumer_satisfaction.append('dislike')
+        else:
+            consumer_satisfaction.append('dislike')
+    else:
+        consumer_satisfaction.append(random.choice(['like', 'so_so']))
+# Customer perseption
+##################################
+
+formula_price = []
+for i in range(n_samples):
+    if viscosidad[i] >= 3500:
+        formula_price.append(round(random.uniform(11.5,15.5),3))
+    elif viscosidad[i] >= 2500 and viscosidad[i] < 3500:
+        formula_price.append(round(random.uniform(7.5,11.5),3))
+    elif viscosidad[i] >= 1500 and viscosidad[i] < 2500:
+        formula_price.append(round(random.uniform(3.5,7.5),3))
+    else:
+        formula_price.append(round(random.uniform(1.2,3.5),3))
+
+
+# Crear el DataFrame
+df1 = pd.DataFrame({
+    'octinoxate': octinoxate,
+    'zinc_oxide': zinc_oxide,
+    'eficacia_octinoxate_hplc': eficacia_octinoxate_hplc,
+    'eficacia_zno_aa': eficacia_zno_aa,
+    'spf_in_vitro': spf_in_vitro,
+
+    'emulsifier': emulsifier,
+    'emulsifier_type': emulsifier_type,
+    'base_type': base_type,
+    'viscosidad': viscosidad,
+    'CSAT': consumer_satisfaction,
+    'formula_price' : formula_price
+})
+
+# Mostrar las primeras filas del DataFrame
+df1.head()
+
+```
+
+
+# Converting pandas DF to R DF
+
+```{r}
+foundation <- py$df1
+head(foundation,4)
+```
+
+
+# Predicting the uv spectrum data for each sample
+
+```{r}
+# Loading newralnetwork
+load(file = 'D:/PROYECTOS 2020/CALCULO FPS R STUDIO/Análisis de las fabricaciones/SIMULADOR ACPKMEANRNA/rnMOD1.rda')
+abs_pred_DF <- as.data.frame(neuralnet::compute(x = rnmod1, covariate = foundation[c(1,2)])$net.result)
+colnames(abs_pred_DF) <- paste0('x', seq(290,400,1))
+wl <- seq(290,400,1)
+colnames(abs_pred_DF) <- paste0('x', seq(290,400, 1))
+
+par(mfrow = c(1, 2))
+matplot(x = wl, y = t(abs_pred_DF[c(1:3),]), type = 'l', ylim = c(0, 2))
+matplot(x = wl, y = t(abs_pred_DF), type = 'l', ylim = c(0, 2))
+par(mfrow = c(1, 1))
+```
+
+
+```{r}
+abs_pred_DF %>%  prep.savgol(width = 7, porder = 1) %>%
+  mdaplot(type = 'l', main = "width = 11, porder = 1, pqn")
+
+abs_pred <- abs_pred_DF
+found <- cbind(foundation, abs_pred)
+found <- found %>% 
+  dplyr::mutate_if(is.character, as.factor) 
+head(found,3)
+
+```
+
+# Predicting the SPF value
+
+Teorical values to calculate SPF obased on ISO 24443 norma
+```{r}
+teoricoFPS <- data.frame(Lo = c(290,291,292,293,294,295,296,297,298,299,300,301,302,303,304,305,306,307,308,309,310,311,312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,338,339,340,341,
+                                342,343,344,345,346,347,348,349,350,351,352,353,354,355,356,357,358,359,360,361,362,363,364,365,366,367,368,369,370,371,372,373,374,375,376,377,378,379,380,381,382,383,384,385,386,387,388,389,390,391,392,393,
+                                394,395,396,397,398,399,400),
+num = c(0.000008741,0.000014500,0.000026589,0.000045745,0.000100570,0.000258940,0.000703490,0.001677600,0.003726800,0.006393187,0.009588049,0.013131046,0.017567581,0.021086352,0.023715829,0.026726464,0.028583575,0.028358035,
+                                 0.028506361,0.026758044,0.025008033,0.023220870,0.020822301,0.019001980,0.016047196,0.014047820,0.012106600,0.010240148,0.008655035,0.007303116,0.006187458,0.005075764,0.004257950,0.003553161,0.002873215,0.002401862,
+                                 0.001968354,0.001608549,0.001330636,0.001264272,0.001229464,0.001207681,0.001201445,0.001161920,0.001120934,0.001098896,0.001071787,0.001046995,0.001011272,0.000996670,0.000960128,0.000939689,0.000912209,0.000880889,
+                                 0.000859406,0.000833232,0.000810996,0.000784675,0.000761766,0.000726994,0.000714960,0.000688373,0.000663663,0.000640771,0.000621154,0.000601738,0.000575523,0.000558135,0.000532600,0.000518882,0.000502133,0.000479621,
+                                 0.000462253,0.000443592,0.000421025,0.000405759,0.000380740,0.000366804,0.000344847,0.000326106,0.000307698,0.000288918,0.000271046,0.000251022,0.000234043,0.000213866,0.000199164,0.000179991,0.000163282,0.000147280,
+                                 0.000129612,0.000115459,0.000101508,0.000086026,0.000072457,0.000060951,0.000050624,0.000040928,0.000033131,0.000026426,0.000020489,0.000015605,0.000011661,0.000008567,0.000006000,0.000004170,0.000002887,0.000001888,
+                                 0.000001239,0.000000780,0.000000507))
+
+# Calculating the SPF value con el df teorico de la norma ISO 24443 y las absorbancias predichas con las RNN
+
+df_fps_cal <- cbind(teoricoFPS, t(abs_pred_DF))
+
+spf_value <- list()
+for (i in 3:ncol(df_fps_cal)){
+  spf_value[[colnames(df_fps_cal)[i]]] <- round(mean(df_fps_cal$num)/mean(df_fps_cal$num*(10^(df_fps_cal[[i]]*-1))),2)
+}
+spf_value <- as.data.frame(t(as.data.frame(spf_value)))
+found <- cbind(FPS = spf_value$V1, found)                 
+
+
+ggplot(data = found, aes(x = octinoxate, y = spf_in_vitro)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, formula = 'y ~ x') +
+  labs(title = "FPS vs Octinoxate", x = "Octinoxate", y = "FPS") +
+  theme_minimal()
+
+ggplot(data = found, aes(x = zinc_oxide, y = spf_in_vitro)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, formula = 'y ~ x') +
+  labs(title = "FPS vs zinc_oxide", x = "zinc_oxide", y = "FPS") +
+  theme_minimal()
+```
+
+# PLS Partial least squares regression
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+set.seed(123)
+# Generic Rule for the Split: 80/20 (80% for the train, 20% for the test)
+idx <- sample(x = nrow(found), size = as.integer(nrow(found)*0.8))
+# The second line creates a random sample of 80% of the rows in the dataset found.
+# The sample is stored in the variable idx, which will be used to split the dataset into training and testing sets.
+
+# Training set
+Xc <- found[idx,13:123]
+yc <- found[idx, c(2,3), drop =F]
+attr(Xc, 'xaxis.values') <- wl
+attr(Xc, 'xaxis.ntame') <- 'Wavelength, nm'
+
+# Testing set
+Xt <- found[-idx,13:123]
+yt <- found[-idx, c(2,3), drop =F]
+attr(Xt, 'xaxis.values') <- wl
+attr(Xt, 'xaxis.name') <- 'Wavelength, nm'
+
+par(mfrow = c(1, 3))
+mdaplot(data = Xc, type = 'l', cgroup = yc[,1], ylab = 'Octinoxate concentration', xlab = 'Wavelength')
+mdaplot(data = Xc, type = 'l', cgroup = yc[,2], ylab = 'Zinc Oxide concentration', xlab = 'Wavelength')
+mdaplot(data = Xc, type = 'l', cgroup = as.factor(found$emulsifier[idx]), ylab = 'Emulsifier type', xlab = 'Wavelength')
+par(mfrow = c(1, 1))
+```
+
+mdaplot(data = Xc, type = 'l', cgroup = yc[,1]): This plots all the training spectra (Xc) as lines (type = 'l'). The lines are colored based on the Octinoxate concentration (first column of yc). This helps you visually check if spectra change with Octinoxate concentration.
+
+mdaplot(data = Xc, type = 'l', cgroup = yc[,2]): Similar plot, but lines are colored based on the Zinc Oxide concentration (second column of yc).
+
+mdaplot(data = Xc, type = 'l', cgroup = as.factor(found$emulsifier[idx])): This plot colors the training spectra based on the Emulsifier type. as.factor makes sure each emulsifier type gets a different color. This helps you see if the emulsifier type has a strong effect on the spectra.
+
+
+This code correctly splits your data into an 80% training set (Xc, yc) and a 20% testing set (Xt, yt). It also prepares the data for plotting with mdatools and generates initial plots to visualize the training spectra colored by concentrations and emulsifier type.
+
+## Model
+
+
+```{r}
+# Fit the model
+m <- pls(x = Xc, y = yc, ncomp = 5, cv = 5, x.test = Xt, y.test = yt, info = 'Pls model FPS ~ EHM+ZnO')
+```
+
+cut out <- stoping somting 
+
+## Analysis pls model
+
+```{r}
+summary(m)
+```
+The PLS model we built with 5 components is highly successful and reliable for predicting both Octinoxate and Zinc Oxide concentrations using just the UV spectral data. This is excellent for our project.
+
+What This Model Allows us To Do:
+
+Instead of needing slower, more expensive lab methods like HPLC (for Octinoxate) or AA (for Zinc Oxide) for every sample, you can now:
+
+Measure the UV spectrum of a sunscreen sample (which is very fast).
+
+Use this model (predict(m, newdata = new_spectrum)) to get an immediate, accurate estimate of the Octinoxate and Zinc Oxide concentrations.
+
+Breaking Down the Results (Practical Meaning):
+
+R2 (R-squared):
+
+Values are around 0.98-0.99 for both ingredients on the Test set.
+
+Meaning: This shows a very strong relationship between the UV spectra and the actual concentrations. Almost all the variation in the ingredient amounts is captured by the spectral data. The model understands the spectral "fingerprint" of your actives.
+
+RMSEP (Root Mean Square Error of Prediction - the 'Test' RMSE):
+
+Octinoxate RMSEP = 0.166.
+
+Zinc Oxide RMSEP = 0.373.
+
+Meaning: This is the average prediction error you can expect when using the model on new samples it hasn't seen before.
+
+For Octinoxate: If the true concentration is, 5.0%, the model will typically predict a value between 5.0 ± 0.166 (i.e., roughly 4.83% to 5.17%). This is very accurate.
+
+For Zinc Oxide: If the true concentration is 7.0%, the model will typically predict a value between 7.0 ± 0.373 (i.e., roughly 6.63% to 7.37%). This is also good accuracy, suitable for many screening purposes.
+
+RPD (Ratio of Performance to Deviation - on Test set):
+
+Octinoxate RPD = 10.93.
+
+Zinc Oxide RPD = 7.19.
+
+Meaning: These high values confirm the model's predictive power. RPD > 5-8 is often considered good for quality control or even quantification in many industries. An RPD > 10 (like for Octinoxate) is generally seen as excellent.
+
+Impact on Formulation & New Product Development:
+
+Faster Formulation Screening: When you create new test formulations, you can scan them quickly with the UV instrument and use the model to instantly estimate if the active levels are close to your target. This avoids waiting hours or days for HPLC/AA results, allowing you to make faster decisions about which formulations to pursue or adjust.
+
+Predicting Concentrations in New Batches: Once a formulation is finalized, you can use this model for rapid quality control on new production batches. A quick UV scan can confirm if the active ingredient levels are within specification, potentially reducing the need for extensive chemical testing on every batch.
+
+Troubleshooting: If a batch shows an unexpected spectrum, the model can help quickly diagnose if the issue might be related to incorrect levels of Octinoxate or Zinc Oxide.
+
+(Indirectly) Predicting SPF: While the model directly predicts concentrations, these concentrations are the main drivers of SPF. By ensuring you quickly and accurately hit your target concentrations of Octinoxate and ZnO using this model, you have much higher confidence that the formulation will achieve the desired SPF value. This reduces the risk of failing expensive in vitro or in vivo SPF tests later.
+
+Efficiency and Cost Savings:
+
+Speed: UV spectroscopy is significantly faster than HPLC or AA. This model leverages that speed for concentration estimation.
+
+Cost: Reduced reliance on slower, labor-intensive, and reagent-consuming methods (HPLC/AA) leads to direct cost savings per sample.
+
+Faster Development Cycles: Quick feedback on formulation trials means your R&D process becomes much faster. You can test more ideas or iterate on promising formulations more rapidly, shortening the time-to-market for new products.
+
+Resource Optimization: Lab technicians' time can be freed up from routine HPLC/AA for more complex tasks.
+
+In Simple Terms: This validated PLS model acts like a "virtual analyst," giving you fast, reliable concentration estimates from quick UV measurements, making your formulation and QC processes much more efficient and cost-effective.
+
+
+# Validation 
+
+```{r}
+plot(m, ny = 1)
+plot(m, ny = 2)
+```
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+m$res$cal$rmse[,]
+m$res$cv$rmse[,]
+m$res$test$rmse[,]
+par(mfrow = c(1, 2))
+plotRMSE(m, ny = 1)
+plotRMSE(m, ny = 2)
+par(mfrow = c(1, 1))
+```
+
+Variable	 |    Cal       |    RMSE      |       RMSE
+           |  (5 Comp.)   | CV (5 Comp.) |	 Test (5 Comp.) |
+-----------|--------------|--------------|------------------|
+Octinoxate |    0.182	    |   0.189      |       0.165      |
+-----------|--------------|--------------|------------------|
+Zinc Oxide |    0.330     |   0.351      |       0.373      |
+------------------------------------------------------------|
+
+RMSE Trend: The tables and the plot RMSE graphs show how the model's average prediction error (RMSE) changes as we add more PLS components (from 2 to 5). Generally, the error decreases as you add components because the model learns more complex relationships.
+
+Finding the "Sweet Spot":
+
+Octinoxate (ny=1): The Test RMSE (your most important error measure) drops significantly up to Component 4 (RMSE = 0.165) and then barely changes (or slightly increases) for Component 5 (RMSE = 0.166). This suggests 4 components are optimal for predicting Octinoxate; adding the 5th doesn't improve prediction for new samples.
+
+Zinc Oxide (ny=2): The Test RMSE keeps decreasing up to Component 5 (RMSE = 0.373), although the improvement from Component 4 (RMSE = 0.397) to Component 5 is smaller than previous improvements.
+
+Choosing Components: Since we need to predict both ingredients, and Octinoxate prediction seems optimal at 4 components while ZnO prediction is best at 5 (within this range), a choice must be made. Using 4 components looks like a very good compromise. It provides excellent Octinoxate prediction and good ZnO prediction (RMSE < 0.4). Using 5 components slightly improves ZnO prediction but offers no benefit (and possibly slight harm) for Octinoxate.
+
+**Formulation Screening: This accuracy is likely sufficient to quickly screen new formulations. We can rapidly tell if We are close to your target concentrations, allowing faster iteration cycles compared to waiting for HPLC/AA.**
+
+**Cost/Time Savings: This achieves the core goal: replacing many slow, expensive tests with a rapid UV scan + model prediction, significantly saving time and resources during R&D and potentially for QC.**
+
+
+```{r}
+
+#| fig-height: 8
+#| fig-width: 15
+plotXVariance(m, show.labels = T, type = 'h')
+m$res$cal$xdecomp$expvar
+m$res$test$xdecomp$expvar
+
+plotYVariance(m, show.labels = T, type = 'h')
+m$res$cal$ydecomp$expvar
+m$res$test$ydecomp$expvar
+
+```
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+par(mfrow = c(1, 2))
+plotXVariance(m, show.labels = T, type = 'h')
+plotYVariance(m, show.labels = T, type = 'h')
+par(mfrow = c(1, 1))
+
+```
+
+The explained variance shows which percentage of the information in the response variable (Octinoxate and Zinc Oxide concentrations) is explained by each latent component, Comp 2 to Comp 5
+
+Variable	 |    Explained    |    Explained     |
+           | Variance Cal (%)| Variance Test (%)| 	
+-----------|-----------------|------------------|
+Comp 2     |    53.40        |   55.80          |       
+-----------|-----------------|------------------|
+Comp 3     |    8.29	       |   11.44          |       
+-----------|-----------------|------------------|
+Comp 4     |    3.95	       |   2.72           |      
+-----------|-----------------|------------------|
+Comp 5     |    1.04	       |   0.17           | 
+-----------|-----------------|------------------|
+
+The first two or three components are the most relevant.
+Components 4 and 5 provide very little additional information, suggesting we could try using fewer components (3 or 4 instead of 5).
+The model generalizes well to new data, as the variance explained in Test is very similar to Calibration.
+
+The explained variance data strongly suggests that 4 PLS components are sufficient. Adding the 5th component brings virtually no benefit for predicting new samples, confirming that a 4-component model is the more efficient and robust choice for your formulation development and QC needs.
+
+
+## Prediction plot 
+
+```{r}
+for(i in 1:5){
+  for(j in 1:2){
+    plotPredictions(m, ncomp = i, ny = j)
+  }
+}
+
+m$res$cal$r2[,]
+m$res$test$r2[,]
+m$res$cv$r2[,]
+```
+
+The high and consistent R² values across calibration, cross-validation, and especially the test set confirm we have built a reliable and accurate predictive model. This model allows you to confidently use rapid UV measurements to estimate Octinoxate and Zinc Oxide levels, leading to significant time and cost savings in your formulation development process compared to relying solely on slower chemical methods. The 4-component model appears to be the most efficient choice.
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+par(mfrow = c(1, 2))
+plotRegcoeffs(m, ny = 1, show.ci = T, ncomp = 2)
+plotRegcoeffs(m, ny = 2, show.ci = T, ncomp = 2)
+par(mfrow = c(1, 1))
+# summary(m$coeffs, ncomp = 4, ny = 1)
+# summary(m$coeffs, ncomp = 4, ny = 2)
+```
+
+summary(m$coeffs...) Results:
+
+Coeffs: The importance value for each wavelength.
+
+p-value: A statistical test. Very small p-values (like 0.000 or 0.001) mean the model is very confident that this wavelength is truly important for predicting Octinoxate. If the p-value is large (e.g., > 0.05, like for x296 or x318), the model isn't sure if that specific wavelength is consistently useful.
+
+2.5% and 97.5%: This is a confidence range. If both numbers are positive or both are negative (the range doesn't cross zero), it strongly confirms the wavelength is important.
+
+The coefficients show exactly which parts of the fast UV scan the model uses to accurately estimate Octinoxate. It primarily uses the known absorption region of Octinoxate (positively) and leverages other spectral regions (negatively), likely related to other formulation components. This confirms the scientific basis for why this quick method works, justifying its use for faster, cheaper analysis during your product development.
+
+
+
+#  Distance plot for X-decomposition and Y-decomposition
+
+```{r}
+#| fig-height: 8
+#| fig-width: 15
+par(mfrow = c(1, 2))
+plotXResiduals(m, show.labels = T, ncomp = 4,show.legend = T)
+plotYResiduals(m, show.labels = T, ncomp = 2,show.legend = T)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+
+
+min(found$octinoxate)
+min(found$zinc_oxide)
+min(found$FPS)
+found %>% 
+  subset(octinoxate == min(found$octinoxate)) 
+found %>% 
+  subset(zinc_oxide == min(found$zinc_oxide)) 
+
+categorize(m, m$res$cal, ncomp = 4)
+Xc[categorize(m, m$res$cal, ncomp = 4) == 'outlier',]
+
+found[195, ]
+found[rownames(Xc),][categorize(m, m$res$cal, ncomp = 4) == 'outlier',]
+```
+
+```{r}
+found[rownames(Xt),][12,13:123]
+found[rownames(Xt),][12,c(2,3,6)]
+new <- found[rownames(Xt),][12,13:123]
+
+#file.choose()
+predict(object = m, x = new)$y.pred[,,1]
+predict(object = m, x = new)$y.pred[,,2]
+
+```
+
+```{r}
+loadings <- m$xloadings
+scores <- m$res$cal$xdecomp$scores
+
+plot(scores[,1], scores[,2], xlab="Comp. 1", ylab="Comp. 2",
+     main="Biplot PLS", pch=19, col="blue", xlim = c(-0.21,0.21), ylim = c(-0.21,0.21))
+arrows(0, 0, loadings[,1] * max(abs(scores[,1])) / max(abs(loadings[,1])), 
+       loadings[,2] * max(abs(scores[,2])) / max(abs(loadings[,2])), 
+       col="green", length=0.1, lwd = 0.1)
+text(loadings[,1] * max(abs(scores[,1])) / max(abs(loadings[,1])), 
+     loadings[,2] * max(abs(scores[,2])) / max(abs(loadings[,2])), 
+     labels=rownames(loadings), col="darkgreen", pos=4, cex=0.7)
+# ADD LABES OF OCTINOXATE AND ZINC OXIDE CONCENTRATION TO THE SCORES
+text(scores[,1], scores[,2], labels=rownames(scores), pos=4, cex=0.7)
+```
+
+```{r}
+library(plotly)
+
+# Extraer loadings y scores
+loadings <- m$xloadings
+scores <- m$res$cal$xdecomp$scores
+
+# 1️⃣ Calcular el centro de los scores
+center_scores <- colMeans(scores)  # O usar apply(scores, 2, median)
+
+# 2️⃣ Escalar los loadings proporcionalmente a los scores
+scale_factor <- apply(scores, 2, function(x) max(abs(x))) / apply(loadings, 2, function(x) max(abs(x)))
+scaled_loadings <- sweep(loadings, 2, scale_factor, "*")
+
+# 3️⃣ Crear gráfica de scatter de scores
+fig <- plot_ly(x = scores[,1], y = scores[,2], z = scores[,3], 
+               type = "scatter3d", mode = "markers", 
+               marker = list(size = 4, color = "blue"))
+
+# 4️⃣ Agregar vectores de loadings desde el centro
+for (i in 1:nrow(loadings)) {
+  fig <- fig %>%
+    add_trace(
+      type = "scatter3d",
+      mode = "lines+text",
+      x = c(center_scores[1], center_scores[1] + scaled_loadings[i,1]),
+      y = c(center_scores[2], center_scores[2] + scaled_loadings[i,2]),
+      z = c(center_scores[3], center_scores[3] + scaled_loadings[i,3]),
+      line = list(color = "gray50", width = 4),
+      text = rownames(loadings)[i],
+      textposition = "top right",
+      showlegend = FALSE
+    )
+}
+
+# 5️⃣ Mostrar la figura
+fig
+
+```
+
+
+
+
+
+
+
+
+
+
+
