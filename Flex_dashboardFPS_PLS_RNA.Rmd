@@ -1,0 +1,646 @@
+---
+title: "**SPF Predictor**"
+output: 
+  flexdashboard::flex_dashboard:
+    #theme: flatly
+    #theme: cerulean
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+--- 
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(readxl)    
+library(shiny)
+library(DT)  
+library(mdatools)
+library(dplyr)
+library(ggplot2)
+library(dygraphs)
+```
+
+
+
+PLS-Concentrations Predictions    
+===================================== 
+
+```{r}
+
+# Define a fileInput to load the data and a checkbox to show the dataframe
+fluidRow(
+  column(width = 2,
+          fileInput("file", "Choose Excel or csv File",
+                      multiple = FALSE,
+                      accept = c(".xlsx", ".csv") )
+          ),
+  column(width = 2,
+         # Creating selectInput to select the columns to be used in the PLS model as dependent variable
+        
+        checkboxGroupInput(inputId = "select_DV", label = "Select DV", 
+                           choices = c("octinoxate", "zinc_oxide", "FPS"),
+                           selected = "octinoxate", width = 200, inline = TRUE)
+         ),
+  column(width = 1,
+         numericInput(inputId = "select_ncomp", label = "N° Comp.", 
+                     value = 5, min = 1, max = 20, step = 1, width = 100)
+         ),
+  column(width = 1,
+         # Create a numeric input to select variable to show in plot(m))
+         numericInput(inputId = "select_variable", label = "ny-Response", 
+                     value = 1, min = 1, max = 3, step = 1, width = 100)
+          ),
+        # Select Input to select the DV to plot THE SPECTRA
+  column(width = 2,
+         selectInput(inputId = "select_DV_plot", label = "Select DV to plot", 
+                    choices = c("octinoxate", "zinc_oxide","FPS", "emulsifier",
+                                "emulsifier_type", "base_type","viscosidad","CSAT","formula_price" ), 
+                    selected = "octinoxate", multiple = F,width = 200)
+         ),
+  column(width= 2,
+         textAreaInput(
+          inputId = "absorbance_input",
+          #label = "Paste absorbance values here (290 to 400 nm):",
+          #placeholder = "0.123 0.456 0.789 ... (111 valores)",
+          label = "",
+          placeholder = "Paste absorbance values here (from 290 to 400 nm):",
+          rows = 2,
+          width = "100%")
+         ),
+  column(width = 1,
+         div(style = "font-size: 10px;",
+         checkboxInput(label = 'Show Dataframe', inputId = 'Show_DataFrame', value = F))
+  )
+  )
+
+# UI to shot the dataframe
+uiOutput('conditional_table') 
+
+```
+
+
+```{r}
+
+# This is to convert the DF into a reactive DF to be used during the app
+datasetInput <- reactive({
+  req(input$file)
+  df <- switch(
+    tools::file_ext(input$file$name),
+    xlsx = readxl::read_excel(input$file$datapath),
+    csv = read.csv(input$file$datapath, stringsAsFactors = T)
+  )
+  df
+})
+
+# Here I am creating a datatable of the reactive DF if the fileinput call Show_DataFrame is T
+output$data_table <- renderDataTable({
+  req(input$Show_DataFrame)
+  df <- datasetInput()
+  datatable(df, filter = 'top',
+            options = list(
+      paging = 10, 
+      scrollY = "400px",  
+      scrollCollapse = TRUE  
+    ))
+})
+
+# This is to show the dataframe if the checkbox is T is rendered
+output$conditional_table <- renderUI({
+  if (input$Show_DataFrame == T){
+    wellPanel(
+       style = "width: 100%; padding: 20px; height: 600px; font-size: 12px; overflow-y: auto;",
+      #h6("**Dataset view**"),
+      DT::dataTableOutput("data_table")
+    )
+  } else {
+    NULL
+  }
+})
+
+
+```
+
+```{r eval=T} 
+
+process_spectra <- function(X) {
+  X_processed <- switch(input$Method,
+    "NA"     = X,
+    "snv"    = prep.snv(X),
+    "msc"    = prep.msc(as.matrix(X)),
+    "area"   = prep.norm(X, "area"),
+    "length" = prep.norm(X, "length"),
+    "savgol" = prep.savgol(X, width = input$width, porder = input$porder, dorder = input$dorder)
+    # X  # valor por defecto si no coincide ninguna opción
+  )
+  
+  attr(X_processed, 'xaxis.values') <- seq(290, 400, by = 1)
+  attr(X_processed, 'xaxis.name') <- 'Wavelength, nm'
+  
+  return(X_processed)
+}
+
+Xc <- reactive({
+  req(input$file)
+  req(input$Method)
+  df <- datasetInput()
+  Xc_raw <- df[,13:123]
+  Xc_processed <- process_spectra(Xc_raw)
+  return(Xc_processed)
+})
+
+```
+
+
+Column {data-width=450}
+-----------------------------------------------------------------------
+### **Summary PLS and PLS-DA models**
+
+<div style="height:550px; width:600px; overflow-y: auto;">
+```{r}
+
+# convert the pls model (m) into a reactive model
+m <- reactive({
+  req(input$select_DV)
+  df <- datasetInput()
+  m <- pls(x = Xc(), y = df[c(input$select_DV)], ncomp = input$select_ncomp, cv = 5, info = cat(c(input$select_DV), '~ UV Spectra'))
+  return(m)
+})
+
+# plot summary y prediction
+fluidRow(
+  column(width = 12,
+         renderPrint({
+         req(input$select_DV)
+         summary(m())
+        })
+      ),
+  column(width = 12,
+         renderPrint({
+           df <- datasetInput()
+           # df <- df %>%
+           #   dplyr::mutate_if(is.character, as.factor)
+           dv <- df[[input$select_DV_plot]]
+           if (is.null(dv) || !is.factor(dv)) {
+             cat("⚠️ Dependent variable must be Categorical (factor).\n
+                  Select one from 'Select DV to plot' option.\n
+                  The categorical variables options are:\n
+                  emulsifier,\n
+                  emulsifier_type,\n
+                  base_type,\n
+                  CSAT\n")
+           } else {
+             summary(mplsda())
+           }
+         })
+         )
+)
+
+```
+
+</div>
+
+
+Column {data-width=650 .tabset}
+-----------------------------------------------------------------------
+
+### Spec
+
+```{r}
+
+div(style = "display: flex; align-items: start; gap: 10px;",  # Flexbox que junta todo
+  
+  # Inputs en un div pequeño
+  div(style =  "width: 200px; padding: 0px; margin: 0px;font-size: 10px;",
+      selectInput(inputId = 'Method', label = 'Prep Method', width = 70,
+                  choices = c("NA", "snv", "msc", "area", "length", "savgol")),
+      numericInput(inputId = 'width', label = 'Width', value = 15, width = 70, 
+                   min = 3, max = 19, step = 2),
+      numericInput(inputId = 'porder', label = 'Polynomial Order', value = 1, 
+                   min = 1, max = 4, step = 1, width = 60),
+      numericInput(inputId = 'dorder', label = 'Derivative Order', value = 1,
+                   min = 0, max = 2, step = 1, width = 60)
+  ),
+  
+  # Gráfico en un div grande
+  div(style = "flex-grow: 1; padding: 0px; margin: 0px;",  # Esto hace que el gráfico ocupe todo el resto
+      renderPlot({
+        req(input$file)
+        req(input$Method)
+        req(Xc())
+        df <- datasetInput()
+        mdaplot(Xc(), 
+                type = 'l', 
+                cgroup = df[, input$select_DV_plot], 
+                ylab = 'Abs', 
+                xlab = 'Wavelength',
+                main = 'Spectra preprocessing')
+      }, height = 500, width = 750)
+  )
+)
+
+```
+
+### Summary plots
+
+```{r}
+renderPlot({
+  req(input$select_variable)
+  req(input$select_DV)
+  plot(m(), ny = input$select_variable)
+})
+```
+
+### "X~Y" Variance 
+
+```{r}
+renderPlot({
+  par(mfrow= c(1,2))
+  plotXVariance(m(), show.labels = T, type = 'h', cex = 5)
+  plotYVariance(m(), show.labels = T, type = 'h', cex = 5)
+  par(mfrow= c(1,1))
+})
+```
+
+### Plot Weights
+
+```{r}
+renderPlot({
+  req(input$select_variable)
+  req(input$select_ncomp)
+  plotWeights(m(), show.labels = F, comp = input$select_ncomp)
+})
+```
+
+### Plot Data pred
+```{r}
+renderPlot({
+  req(new_sample())
+  mdaplot(new_sample(), type = 'l', ylab = "Absorbance", xlab = 'Wavelength', main = 'New Data to predict',lwd = 3)
+})
+```
+
+### Distance plot X~Y
+
+```{r}
+
+# DF of the absorbance input to make predictions
+new_sample <- reactive({
+  req(input$absorbance_input)
+  # Convertir el texto a un vector numérico
+  absorb_values <- strsplit(input$absorbance_input, ",|\\s+")[[1]]
+  absorb_values <- as.numeric(absorb_values)
+  # Validate that there are 111 values (from 290 to 400 nm)
+  validate(
+    need(length(absorb_values) == 111, "You should insert the 111 absorvance values.")
+  )
+  
+  df_new <- as.data.frame(t(absorb_values))
+  colnames(df_new) <- paste0("x", 290:400)
+  df_new <- process_spectra(df_new)
+  return(df_new)
+  
+})
+
+renderPlot({
+  if (is.null(input$absorbance_input) || input$absorbance_input == "") {
+  plot.new()
+  text(0.5, 0.5, "⚠️ Please enter absorbance values.", cex = 1.5, col = "red")
+  } else {
+    
+  df <- datasetInput()
+
+  
+  #Plot 1
+  par(mfrow= c(1,2))
+  req(new_sample())
+  req(input$absorbance_input)
+  pred <- predict(m(), new_sample())
+  plotXResiduals(m(), res = list("train" = m()$res$cal, 'pred' = pred), 
+                 show.labels = F, ncomp = input$select_ncomp, cgroup = df[,input$select_DV_plot])
+  
+  #Plot 2
+  plotYResiduals(m(), show.labels = T, ncomp = input$select_ncomp,show.legend = T)
+  par(mfrow= c(1,1))
+  }
+})
+```
+
+### **Predictions Results**
+
+```{r}
+
+mplsda <- reactive({
+  req(input$select_DV_plot)
+  df <- datasetInput()
+  if(!is.factor(df[[input$select_DV_plot]])){
+    return(NULL)
+  }
+  mplsda <- plsda(Xc(), as.factor(df[[input$select_DV_plot]]), ncomp = input$select_ncomp, center = T,cv = list("ven", k = 10),
+                  info = cat(input$select_DV_plot, '~ UV Spectra'))
+})
+
+fluidRow(
+  
+  column(width = 12,
+         p('PLS Model Results'),
+         renderPrint({
+           
+           if (is.null(input$absorbance_input) || input$absorbance_input == "") {
+             cat("⚠️ Please enter absorbance values.")
+             } else {
+           
+           req(input$select_DV)
+           req(input$absorbance_input)
+           cat('Predicctions results:', input$select_DV)
+           cat('\n')
+           req(new_sample())
+           req(input$absorbance_input)
+           predict(m(), new_sample())$y.pred[, input$select_ncomp ,]
+             }
+      })
+  ),
+  column(width = 12,
+         p('PLS-DA Model Results'),
+         renderPrint({
+           req(input$absorbance_input)
+           
+           df <- datasetInput()
+           dv <- df[[input$select_DV_plot]]
+           if (is.null(dv) || !is.factor(dv)) {
+             cat("⚠️ **Dependent variable must be Categorical (factor)**")
+           } else {
+           req(new_sample())
+           req(input$absorbance_input)
+           cat('**PLS-DA Categorical predictions\n**')
+           predplsda <- predict(mplsda(), new_sample())$y.pred[, input$select_ncomp ,]
+           
+           idx_max <- which.max(predplsda)
+           predicted_class <- names(predplsda)[idx_max]
+           predicted_value <- predplsda[idx_max]
+           
+           cat("Predicted class is:", predicted_class, "\n")
+           cat("Prediction score:", predicted_value, "\n")
+           }
+         })         
+  )
+)
+
+```
+
+### PLS-DA performance
+
+```{r}
+renderPlot({
+  df <- datasetInput()
+    dv <- df[[input$select_DV_plot]]
+  if (is.null(dv) || !is.factor(dv)) {
+  plot.new()
+  text(0.5, 0.5, "⚠️ Dependent variable must be Categorical (factor).\n
+        Select one from 'Select DV to plot' option.\n
+        The categorical varables options are:\n
+        emulsifier,\n
+        emulsifier_type,\n
+        base_type,\n
+        CSAT\n", cex = 1, col = "red")
+
+  } else {
+
+  par(mfrow = c(1, 3))
+  plotSensitivity(mplsda(), main = "Sensibilidad vs. Componentes", show.labels = TRUE)
+  plotSpecificity(mplsda(), main = "Especificidad vs. Componentes", show.labels = TRUE)
+  plotMisclassified(mplsda(), main = "Tasa de Error vs. Componentes", show.labels = TRUE)
+  par(mfrow = c(1, 1))
+  }
+})
+```
+
+### PLS-DA Pred
+
+```{r}
+renderPlot({
+  req(input$select_DV)
+  df <- datasetInput()
+  dv <- df[[input$select_DV_plot]]
+  if (is.null(dv) || !is.factor(dv)) {
+    plot.new()
+    text(0.5,0.5,"⚠️ **Dependent variable must be Categorical (factor)**")
+           } else {
+    
+  req(input$absorbance_input)
+  predplsda <- predict(mplsda(), new_sample())
+  plotPredictions(mplsda(),
+                  ncomp = input$select_ncomp, show.labels = F)
+           }
+  
+})
+```
+
+
+### PLS-DA Scores Plot
+
+```{r}
+
+renderPlot({
+  
+  df <- datasetInput()
+  scores <- mplsda()$res$cal$xdecomp$scores
+  groups = df[, input$select_DV_plot]
+  if(is.null(groups) || !is.factor(groups)){
+    plot.new()
+    text(0.5,0.5,"⚠️ **Dependent variable must be Categorical (factor)**")
+  } else{
+
+  ggplot(data = as.data.frame(scores), aes(x =  scores[,1], y = scores[,2], colour = groups  )) +
+    geom_point() +
+    scale_fill_manual(values = rainbow(n = 3,alpha = 0.5)) +
+    labs(title = "PLS-DA Scores Plot", x = "Component 1", y = "Component 2") +
+    stat_ellipse(data = as.data.frame(scores),
+                 aes(x = scores[,1], y = scores[,2],
+                     fill = groups,
+                     colour = groups),
+  
+                 geom = "polygon",
+                 alpha = 0.1,
+                 level = 0.95,
+                 type = "norm",
+                 linetype = 2) +
+    theme_minimal()
+  }
+})
+
+
+```
+
+
+RNN to predcit Abs data    
+===================================== 
+
+```{r eval=FALSE}
+
+load(file = 'C:/Users/juand/Desktop/proyectos/FPS_SIMULATOR/rnFPS.rda')
+summary(rnFPS)
+
+newdata <- data.frame(octinoxate = 3.595962, zinc_oxide = 7.841892)
+
+# Usar `compute` directamente
+#pred <- neuralnet::compute(rnmod1, covariate = newdata)$net.result
+
+```
+
+
+```{r}
+fluidRow(
+    column(width = 4,
+         radioButtons(inputId = 'plot', label = 'Choose a plot', 
+             choices = c('Prediction','Critical_Wavelength'), selected = 'Prediction')
+         ),
+    
+  column(width = 4,
+      sliderInput(label = 'EMH Conc.', inputId = 'ConcEMH',
+                  min = 0,
+                  max = 15,
+                  value = 5, step = 0.2)),
+
+  column(width = 4,
+      sliderInput(label = 'Zinc oxide Conc.', inputId = 'ConcZnO',
+                  min = 0,
+                  max = 15,
+                  value = 5, step = 0.2))
+
+)
+```
+
+Column {data-width=700 .tabset}
+-----------------------------------------------------------------------
+### **Plot UV data**
+
+```{r}
+#load(file = 'C:/Users/juand/Desktop/proyectos/FPS_SIMULATOR/rnFPS.rda')
+
+load(file = 'D:/PROYECTOS 2020/CALCULO FPS R STUDIO/Análisis de las fabricaciones/SIMULADOR ACPKMEANRNA/rnMOD1.rda')
+#abs_pred_DF <- as.data.frame(neuralnet::compute(x = rnmod1, covariate = foundation[c(1,2)])$net.result)
+
+
+w <- seq(from = 290, to = 400, by = 1)
+
+
+abs_rnn <-  reactive({
+  abs_rnn <- neuralnet::compute(rnmod1, data.frame(octinoxate = input$ConcEMH, zinc_oxide =input$ConcZnO))$net.result
+  colnames(abs_rnn) <- paste0('x', seq(290,400, 1))
+  return(abs_rnn)
+})
+
+cw <- reactive({
+      cw_df <- data.frame(w, abs= t(abs_rnn()))
+      avg_absorbance  <- (cw_df$abs[-1] + cw_df$abs[-length(cw_df$abs)])/2
+      trapezoid_areas <- diff(cw_df$w) * avg_absorbance
+      cw_df$integral <- c(0,cumsum(trapezoid_areas))
+      cw <- (cw_df$w)[which(cw_df$integral >= sum(trapezoid_areas)*0.9)[1]]
+      return(cw)
+
+})
+
+renderDygraph({
+  if (input$plot == "Prediction") {
+              dygraph(data = data.frame(w = w, abs = t(abs_rnn())), 
+                  xlab = 'Wavelength', ylab = 'Abs') %>% 
+            dyOptions(fillGraph = T, fillAlpha = 0.5, 
+                           drawPoints = T, pointSize = 1, pointShape = 'dot',
+                          gridLineColor = NA, drawGrid = FALSE) %>% 
+            dyCrosshair(direction = "vertical") %>% 
+            dyHighlight(highlightCircleSize = 8, highlightSeriesBackgroundAlpha = 0.5, 
+                            highlightSeriesOpts = list(strokeWidth = 3)) %>%
+                dyRangeSelector() %>%
+                dyLegend(show = 'follow')
+  }
+  
+  else if (input$plot == 'Critical_Wavelength'){
+    
+      dygraph(data = data.frame(w = w, abs = t(abs_rnn())), 
+                  xlab = 'Wavelength', ylab = 'Abs') %>% 
+            dyOptions(fillGraph = T, fillAlpha = 0.5,
+                           drawPoints = T, pointSize = 1, pointShape = 'dot',
+                          gridLineColor = NA, drawGrid = FALSE) %>% 
+            dyCrosshair(direction = "vertical") %>% 
+            dyHighlight(highlightCircleSize = 8, highlightSeriesBackgroundAlpha = 0.5,
+                            highlightSeriesOpts = list(strokeWidth = 3)) %>%
+                dyRangeSelector(fillColor = ifelse(cw() < 370, '#FF6A6A', 'skyblue')) %>%
+  
+      dyAnnotation(x = as.character(cw()), text = as.character(cw()), tooltip = 'Critical Wavelength', width = 30, height=30) %>%
+      dyShading(from = '290', to = cw(), color = ifelse(cw() < 370, '#FF6A6A', 'skyblue')) %>%
+      dyEvent(x = as.character(cw()), 'Critical Wavelength', labelLoc = 'top', color = '#FCFCFC') %>%
+      dyLegend(show = 'follow')
+  }
+})
+
+```
+
+Column {data-width=300}
+-----------------------------------------------------------------------
+
+```{r}
+
+teoricoFPS <- data.frame(Lo = c(290,291,292,293,294,295,296,297,298,299,300,301,302,303,304,305,306,307,308,309,310,311,312,313,314,315,316,317,318,319,320,321,322,323,324,325,326,327,328,329,330,331,332,333,334,335,336,337,338,339,340,341,
+                                342,343,344,345,346,347,348,349,350,351,352,353,354,355,356,357,358,359,360,361,362,363,364,365,366,367,368,369,370,371,372,373,374,375,376,377,378,379,380,381,382,383,384,385,386,387,388,389,390,391,392,393,
+                                394,395,396,397,398,399,400),
+                         num = c(0.000008741,0.000014500,0.000026589,0.000045745,0.000100570,0.000258940,0.000703490,0.001677600,0.003726800,0.006393187,0.009588049,0.013131046,0.017567581,0.021086352,0.023715829,0.026726464,0.028583575,0.028358035,
+                                 0.028506361,0.026758044,0.025008033,0.023220870,0.020822301,0.019001980,0.016047196,0.014047820,0.012106600,0.010240148,0.008655035,0.007303116,0.006187458,0.005075764,0.004257950,0.003553161,0.002873215,0.002401862,
+                                 0.001968354,0.001608549,0.001330636,0.001264272,0.001229464,0.001207681,0.001201445,0.001161920,0.001120934,0.001098896,0.001071787,0.001046995,0.001011272,0.000996670,0.000960128,0.000939689,0.000912209,0.000880889,
+                                 0.000859406,0.000833232,0.000810996,0.000784675,0.000761766,0.000726994,0.000714960,0.000688373,0.000663663,0.000640771,0.000621154,0.000601738,0.000575523,0.000558135,0.000532600,0.000518882,0.000502133,0.000479621,
+                                 0.000462253,0.000443592,0.000421025,0.000405759,0.000380740,0.000366804,0.000344847,0.000326106,0.000307698,0.000288918,0.000271046,0.000251022,0.000234043,0.000213866,0.000199164,0.000179991,0.000163282,0.000147280,
+                                 0.000129612,0.000115459,0.000101508,0.000086026,0.000072457,0.000060951,0.000050624,0.000040928,0.000033131,0.000026426,0.000020489,0.000015605,0.000011661,0.000008567,0.000006000,0.000004170,0.000002887,0.000001888,
+                                 0.000001239,0.000000780,0.000000507))
+```
+
+### Sun Protection Factor
+
+```{r}
+# Uniendo las predicciones con RNN y los teoricos
+
+abs_rnn_teorical <- reactive({
+      abs_rnn_teorical <- cbind(teorical = teoricoFPS, abs_rnn = t(abs_rnn()))
+      return(abs_rnn_teorical)
+})
+
+SPF <- reactive({
+  C <- 1
+  SPF <- round(mean(abs_rnn_teorical()$teorical.num)/mean(abs_rnn_teorical()$teorical.num*(10^(abs_rnn_teorical()$abs_rnn*-1*C))), 2)
+  return(SPF)
+}) 
+
+renderValueBox(
+  valueBox(SPF(),
+           icon = "fa-pencil",
+           color = ifelse(SPF() > 20, "darkgreen", "darkred"), )
+
+)
+
+```
+
+### Critical wavelength
+
+```{r}
+renderGauge({
+  gauge(cw(), min = 290, max = 400, symbol = 'CW', 
+        gaugeSectors(success = c(375, 400),warning = c(370, 374), danger = c(290, 370)))
+})
+```
+
+### FPS Model PLS
+
+```{r}
+renderValueBox(
+  valueBox(
+    
+        round(predict(m(), new_sample())$y.pred[, input$select_ncomp ,],2)
+          )
+              )
+
+
+```
+
+### Ecuation
+
+$$in\_vitro\_fps = \frac{\int_{290nm}^{400nm} E(\lambda)\cdot I(\lambda)\cdot d(\lambda}{\int_{290nm}^{400nm} E(\lambda)\cdot I(\lambda)\cdot 10^{-A(\lambda)}\cdot d(\lambda)}$$
+
+
